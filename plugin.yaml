@@ -1,0 +1,10 @@
+name: hermes-discord-clarify
+label: Discord Clarify
+kind: platform
+version: 0.1.0
+description: >
+  Readable Discord clarify prompts for Hermes Agent. Multiple-choice prompts
+  show full numbered answers in message content while buttons use numeric
+  labels and preserve the bundled callback contract.
+author: calvinnwq
+homepage: https://github.com/calvinnwq/hermes-discord-clarify
