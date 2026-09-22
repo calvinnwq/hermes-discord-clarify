@@ -252,7 +252,7 @@ def test_load_host_falls_back_to_source_tree(fake_host):
     assert plugin._load_host() is source_host
 
 
-def test_register_resolves_bundled_entry_before_loading_host(fake_host, monkeypatch):
+def test_register_loads_host_before_legacy_registry_fallback(fake_host, monkeypatch):
     plugin = load_plugin()
     ctx = FakeContext()
     events = []
@@ -277,8 +277,53 @@ def test_register_resolves_bundled_entry_before_loading_host(fake_host, monkeypa
 
     plugin.register(ctx)
 
-    assert events[0] == "registry.get"
-    assert events[1] == "import:hermes_plugins.discord_platform.adapter"
+    assert events[0] == "import:hermes_plugins.discord_platform.adapter"
+    assert events[1] == "import:plugins.platforms.discord.adapter"
+    assert events[2] == "registry.get"
+
+
+def test_register_uses_host_metadata_without_resolving_registry(fake_host, monkeypatch):
+    host, entry = fake_host
+
+    def bundled_register(capture):
+        capture.register_platform(
+            name=entry.name,
+            label=entry.label,
+            adapter_factory=FakeBaseAdapter,
+            check_fn=entry.check_fn,
+            validate_config=entry.validate_config,
+            required_env=entry.required_env,
+            install_hint=entry.install_hint,
+            is_connected=entry.is_connected,
+            setup_fn=entry.setup_fn,
+            allowed_users_env=entry.allowed_users_env,
+            allow_all_env=entry.allow_all_env,
+            cron_deliver_env_var=entry.cron_deliver_env_var,
+            standalone_sender_fn=entry.standalone_sender_fn,
+            max_message_length=entry.max_message_length,
+            emoji=entry.emoji,
+            allow_update_command=entry.allow_update_command,
+            platform_hint=entry.platform_hint,
+            apply_yaml_config_fn=entry.apply_yaml_config_fn,
+        )
+
+    host.register = bundled_register
+    plugin = load_plugin()
+    ctx = FakeContext()
+    registry = sys.modules["gateway.platform_registry"].platform_registry
+    monkeypatch.setattr(
+        registry,
+        "get",
+        lambda name: pytest.fail("registration must not resolve the deferred platform"),
+    )
+
+    plugin.register(ctx)
+
+    assert len(ctx.calls) == 1
+    call = ctx.calls[0]
+    assert call["label"] == "Discord"
+    assert call["required_env"] == ["DISCORD_BOT_TOKEN"]
+    assert call["adapter_factory"](None).__class__.__name__ == "ReadableDiscordAdapter"
 
 
 def test_register_fails_safe_when_discord_symbols_are_unavailable(fake_host):

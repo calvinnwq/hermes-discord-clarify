@@ -374,6 +374,36 @@ def _platform_registration_kwargs(entry: Any, adapter_factory: Any) -> dict[str,
     return kwargs
 
 
+class _RegistrationCapture:
+    """Capture a bundled adapter's registration without touching the live registry."""
+
+    def __init__(self) -> None:
+        self.kwargs: Optional[dict[str, Any]] = None
+
+    def register_platform(self, **kwargs: Any) -> None:
+        self.kwargs = dict(kwargs)
+
+
+def _host_registration_kwargs(host: Any) -> Optional[dict[str, Any]]:
+    """Read bundled platform metadata without resolving a deferred registry entry.
+
+    ``register()`` can run while the plugin manager holds its discovery lock.  Calling
+    ``platform_registry.get("discord")`` there waits for the bundled deferred loader,
+    whose own loader needs that same lock, so the two plugin loads deadlock.  The bundled
+    adapter's registration entry point is the safe metadata source because it only calls
+    ``register_platform`` and does not resolve the registry.
+    """
+
+    register_fn = getattr(host, "register", None)
+    if not callable(register_fn):
+        return None
+    capture = _RegistrationCapture()
+    register_fn(capture)
+    if not capture.kwargs or capture.kwargs.get("name") != "discord":
+        raise CompatibilityError("bundled Discord adapter did not expose a Discord platform registration")
+    return capture.kwargs
+
+
 def _filter_context_kwargs(ctx: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
     """Avoid passing newer PlatformEntry fields to an older host context."""
 
@@ -393,25 +423,30 @@ def register(ctx: Any) -> None:
     """Register the Discord override, failing safe on incompatible hosts."""
 
     try:
-        from gateway.platform_registry import platform_registry
-
-        # Resolving the bundled entry first preserves auth, setup, YAML, cron,
-        # standalone sending, and display metadata. Registry registration is
-        # last-writer-wins, so our same-name entry becomes the active override.
-        bundled_entry = platform_registry.get("discord")
-        if bundled_entry is None:
-            raise CompatibilityError("bundled Discord platform entry is unavailable")
-
-        # In an installed Hermes runtime, resolving the deferred entry above
-        # materializes the adapter under hermes_plugins.discord_platform. The
-        # source-tree namespace remains available for development/test hosts.
         host = _load_host()
         _, _, adapter_class = _build_override_classes(host)
-        kwargs = _platform_registration_kwargs(
-            bundled_entry,
-            lambda config: adapter_class(config),
-        )
-        ctx.register_platform(**_filter_context_kwargs(ctx, kwargs))
+
+        # Do not call platform_registry.get() from register(): the plugin manager may be
+        # holding its discovery lock while the bundled deferred Discord loader waits for it.
+        # Capture the bundled adapter's own registration metadata instead, then replace only
+        # its factory. Older hosts without a bundled register() entry point retain the legacy
+        # registry lookup fallback.
+        bundled_kwargs = _host_registration_kwargs(host)
+        if bundled_kwargs is None:
+            from gateway.platform_registry import platform_registry
+
+            bundled_entry = platform_registry.get("discord")
+            if bundled_entry is None:
+                raise CompatibilityError("bundled Discord platform entry is unavailable")
+            bundled_kwargs = _platform_registration_kwargs(
+                bundled_entry,
+                lambda config: adapter_class(config),
+            )
+        else:
+            bundled_kwargs = dict(bundled_kwargs)
+            bundled_kwargs["adapter_factory"] = lambda config: adapter_class(config)
+
+        ctx.register_platform(**_filter_context_kwargs(ctx, bundled_kwargs))
         logger.info("Registered Discord clarify readability override")
     except Exception as exc:
         # A disabled/missing/incompatible plugin must never replace a working
